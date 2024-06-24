@@ -1,7 +1,10 @@
+import ipaddress
 import os
+import socket
 import subprocess
 import tempfile
 
+import psutil
 from tabulate import tabulate
 
 
@@ -11,6 +14,25 @@ def run_command(command):
     if error:
         print(f"Error: {error.decode('utf-8')}")
     return output.decode('utf-8')
+
+
+def get_local_network_cidr():
+    interfaces = psutil.net_if_addrs()
+
+    for interface_name, interface_addresses in interfaces.items():
+        for address in interface_addresses:
+            if address.family == socket.AF_INET and not address.address.startswith('127.'):
+                network_address = address.address
+                subnet_mask = address.netmask
+                break
+        else:
+            continue
+        break
+
+    network = ipaddress.IPv4Network(f'{network_address}/{subnet_mask}', strict=False)
+    cidr_range = str(network)
+
+    return cidr_range
 
 
 def get_live_hosts(ip_range):
@@ -30,7 +52,7 @@ def get_mac_and_vendor(live_hosts):
         temp_file_name = temp_file.name
 
     # Run arp-scan with the temporary file
-    command = f"arp-scan -f {temp_file_name}"
+    command = f"arp-scan -g -f {temp_file_name}"
     output = run_command(command)
 
     # Clean up the temporary file
@@ -52,13 +74,34 @@ def main():
         print("Please run as root")
         return
 
-    ip_range = input("Enter IP range (e.g., '192.168.1.0/24' or '192.168.1.100 192.168.1.200'): ")
+    default_ip_range = get_local_network_cidr()
+    prompt_message = (
+        f"Enter IP range (e.g., '192.168.1.0/24' or '192.168.1.100 192.168.1.200')\n"
+        f"Default: '{default_ip_range}' : "
+    )
+    ip_range = input(prompt_message)
+
+    # Count number of hosts to be scanned
+    if not ip_range:
+        ip_range = default_ip_range
+
+    if '/' in ip_range:  # CIDR notation
+        network = ipaddress.ip_network(ip_range, strict=False)
+        num_hosts = network.num_addresses
+    else:  # Start and end IP address range
+        start_ip, end_ip = ip_range.split()
+        start_ip_obj = ipaddress.ip_address(start_ip)
+        end_ip_obj = ipaddress.ip_address(end_ip)
+        num_hosts = int(end_ip_obj) - int(start_ip_obj) + 1
+
+    print(f"\nNumber of hosts to be scanned: {num_hosts}\n")
 
     live_hosts = get_live_hosts(ip_range)
     results = get_mac_and_vendor(live_hosts)
+    sorted_results = sorted(results, key=lambda x: x[0])
 
     headers = ["IP Address", "MAC Address", "Vendor"]
-    print(tabulate(results, headers=headers, tablefmt="grid"))
+    print(tabulate(sorted_results, headers=headers, tablefmt="grid"))
 
 
 if __name__ == "__main__":
